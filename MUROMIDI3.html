@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>MUROBOX N40 Filter - Strict Mode</title>
+    <script src="https://unpkg.com/@tonejs/midi"></script>
+    <style>
+        body { font-family: -apple-system, sans-serif; background: #fdfdfd; padding: 20px; }
+        .container { max-width: 600px; margin: 0 auto; background: #fff; padding: 30px; border-radius: 12px; border: 1px solid #eee; box-shadow: 0 10px 30px rgba(0,0,0,0.05); }
+        h1 { font-size: 1.2rem; color: #444; margin-bottom: 20px; text-align: center; }
+        .drop-zone { border: 2px dashed #3498db; padding: 40px; text-align: center; color: #3498db; cursor: pointer; border-radius: 10px; margin-bottom: 20px; }
+        .btn { display: block; width: 100%; padding: 15px; background: #2ecc71; color: white; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 1rem; }
+        .btn:disabled { background: #ddd; cursor: not-allowed; }
+        .log { background: #f8f9fa; color: #666; padding: 15px; font-family: monospace; font-size: 12px; height: 180px; overflow-y: auto; border-radius: 6px; margin-top: 20px; border: 1px solid #eee; }
+        .config { margin-bottom: 20px; font-size: 0.9rem; color: #555; background: #fff4e5; padding: 10px; border-radius: 6px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>MUROBOX N40 Filter <span style="font-size: 0.8rem; opacity: 0.6;">(Strict Mode)</span></h1>
+    
+    <div class="config">
+        <strong>現在の設定:</strong><br>
+        ・オクターブ移動しても範囲外の音は削除<br>
+        ・N40非対応の低音半音は削除
+    </div>
+
+    <div class="drop-zone" id="dropZone">
+        ここにMIDIファイルをドロップ
+        <input type="file" id="fileInput" accept=".mid,.midi" style="display:none">
+    </div>
+
+    <div id="fileInfo" style="margin-bottom: 10px; text-align: center; font-weight: bold;"></div>
+
+    <button id="processBtn" class="btn" disabled>変換して保存</button>
+
+    <div class="log" id="logWindow">ログ: 待機中...</div>
+</div>
+
+<script>
+    const logEl = document.getElementById('logWindow');
+    const fileInput = document.getElementById('fileInput');
+    const dropZone = document.getElementById('dropZone');
+    const processBtn = document.getElementById('processBtn');
+    
+    let loadedMidi = null;
+
+    // N40の厳密な仕様
+    const MIN = 53; // F2
+    const MAX = 105; // A6
+    const INVALID = [54, 56, 58, 61]; // F#2, G#2, A#2, C#3 (演奏不可)
+
+    function writeLog(msg) {
+        const div = document.createElement('div');
+        div.textContent = `> ${msg}`;
+        logEl.appendChild(div);
+        logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    dropZone.onclick = () => fileInput.click();
+    fileInput.onchange = (e) => handleFile(e.target.files[0]);
+
+    async function handleFile(file) {
+        if (!file) return;
+        try {
+            const arrayBuffer = await file.arrayBuffer();
+            loadedMidi = new Midi(arrayBuffer);
+            document.getElementById('fileInfo').textContent = `選択中: ${file.name}`;
+            writeLog(`ファイルを読み込みました: ${file.name}`);
+            processBtn.disabled = false;
+        } catch (err) {
+            writeLog(`エラー: ${err.message}`);
+        }
+    }
+
+    processBtn.onclick = () => {
+        if (!loadedMidi) return;
+        writeLog("フィルタリング処理を開始...");
+
+        const resultMidi = new Midi();
+        const mainTrack = resultMidi.addTrack();
+        mainTrack.name = "N40 Filtered Track";
+
+        let keptCount = 0;
+        let removedCount = 0;
+
+        loadedMidi.tracks.forEach(track => {
+            track.notes.forEach(note => {
+                let m = note.midi;
+
+                // 1. オクターブ移動を試みる
+                if (m < MIN) {
+                    while (m < MIN && m <= 115) m += 12;
+                } else if (m > MAX) {
+                    while (m > MAX && m >= 12) m -= 12;
+                }
+
+                // 2. 最終チェック（範囲外、または非対応半音なら切り捨てる）
+                const isOutOfRange = (m < MIN || m > MAX);
+                const isInvalidSemi = INVALID.includes(m);
+
+                if (isOutOfRange || isInvalidSemi) {
+                    removedCount++;
+                } else {
+                    mainTrack.addNote({
+                        midi: m,
+                        time: note.time,
+                        duration: note.duration,
+                        velocity: note.velocity
+                    });
+                    keptCount++;
+                }
+            });
+        });
+
+        writeLog(`処理完了。演奏可能: ${keptCount}音 / 削除: ${removedCount}音`);
+        
+        const blob = new Blob([resultMidi.toArray()], { type: "audio/midi" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `n40_strict_${Date.now()}.mid`;
+        a.click();
+        writeLog("ダウンロード完了。");
+    };
+</script>
+
+</body>
+</html>
