@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>MUROBOX N40 Filter</title>
+    <title>MUROBOX N40 Filter - Melody Protect Mode</title>
     <script src="https://unpkg.com/@tonejs/midi"></script>
     <style>
         body { font-family: -apple-system, sans-serif; background: #fdfdfd; padding: 20px; }
@@ -17,7 +17,7 @@
 <body>
 
 <div class="container">
-    <h1>MUROBOX N40 Filter</h1>
+    <h1>MUROBOX N40 Filter<br><span style="font-size: 0.8rem; opacity: 0.6;">(Melody Protect Mode)</span></h1>
 
     <div class="drop-zone" id="dropZone">
         ここにMIDIファイルをドロップ
@@ -68,19 +68,26 @@
         }
     }
 
-    // 最適なオクターブシフトを探す関数
+    // 最適なオクターブシフトを探す関数（削除をゼロにするため探索範囲を拡大）
     function getBestOctaveShift(m) {
-        const shifts = [0, 12, -12, 24, -24, 36, -36, 48, -48, 60, -60];
-        for (let shift of shifts) {
-            let v = m + shift;
+        let bestM = null;
+        let minShiftDist = Infinity;
+        
+        // -10 から +10 オクターブまで広く探索し、必ずN40の範囲に収める
+        for (let i = -10; i <= 10; i++) {
+            let v = m + (i * 12);
             if (v >= MIN && v <= MAX && !INVALID.includes(v)) {
-                return v;
+                let dist = Math.abs(i);
+                if (dist < minShiftDist) {
+                    minShiftDist = dist;
+                    bestM = v;
+                }
             }
         }
-        return null;
+        return bestM;
     }
 
-    // 移調の評価（高音優先のペナルティスコアリング）
+    // 移調の評価（メロディ死守の指数関数ペナルティ）
     function evaluateTranspose(notes, t) {
         let penalty = 0;
         let droppedCount = 0;
@@ -90,14 +97,17 @@
             let m = note.midi + t;
             let bestM = getBestOctaveShift(m);
             
+            // 指数関数による重み付け（原曲の音高ベース）
+            // 1半音高いだけで1.5倍、1オクターブで約130倍、2オクターブで約16000倍優先される
+            let weight = Math.pow(1.5, note.midi - 40);
+
             if (bestM === null) {
-                // 削除される場合：非常に重いペナルティ。元の音が高いほどさらに重くなる
-                penalty += 10000 + (note.midi * 100);
+                // 理論上ここは通らなくなりますが念のため
+                penalty += weight * 10000;
                 droppedCount++;
             } else if (bestM !== m) {
-                // オクターブ折り返しされる場合：元の音が高いほどペナルティを重くする
-                // これにより、高音はスライド（そのまま移動）させ、低音を折り返す選択が優位になる
-                penalty += 1000 + (note.midi * 10);
+                // オクターブ折り返し（スライドできず外れた）場合のペナルティ
+                penalty += weight;
                 shiftedCount++;
             }
         }
@@ -106,7 +116,7 @@
 
     processBtn.onclick = () => {
         if (!currentArrayBuffer) return;
-        writeLog("高音（メロディ）を優先して最適なキーを計算中...");
+        writeLog("メロディライン（最高音）を最優先して最適キーを計算中...");
 
         const midiData = new Midi(currentArrayBuffer);
         let allNotes = [];
@@ -129,7 +139,6 @@
         let minPenalty = Infinity;
         let bestAbsT = Infinity;
 
-        // 全キーをシミュレーションしてペナルティが最小のシフト量を決定
         for (let t of tCandidates) {
             let res = evaluateTranspose(allNotes, t);
             
@@ -138,7 +147,6 @@
                 bestT = t;
                 bestAbsT = Math.abs(t);
             } 
-            // ペナルティスコアが完全に一致した場合（稀ですが）、移調幅が小さい方を優先
             else if (res.penalty === minPenalty) {
                 if (Math.abs(t) < bestAbsT) {
                     bestT = t;
@@ -147,10 +155,9 @@
             }
         }
 
-        // 最終評価の結果をログ出力
         let finalEval = evaluateTranspose(allNotes, bestT);
-        writeLog(`最適キー決定: ${bestT > 0 ? '+' : ''}${bestT} 半音スライド`);
-        writeLog(`(想定削除: ${finalEval.droppedCount}音 / 低音域での折り返し等: ${finalEval.shiftedCount}音)`);
+        writeLog(`最適キー決定: ${bestT > 0 ? '+' : ''}${bestT} 半音全体スライド`);
+        writeLog(`(伴奏などの折り返し移動: ${finalEval.shiftedCount}音)`);
 
         const resultMidi = new Midi();
         
@@ -191,13 +198,13 @@
             });
         });
 
-        writeLog(`処理完了。演奏可能: ${keptCount}音 / 最終削除: ${removedCount}音`);
+        writeLog(`処理完了。演奏可能: ${keptCount}音 / 削除: ${removedCount}音`);
         
         const blob = new Blob([resultMidi.toArray()], { type: "audio/midi" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `n40_transposed_${bestT}_${Date.now()}.mid`;
+        a.download = `n40_melody_protect_${bestT}_${Date.now()}.mid`;
         a.click();
         writeLog("ダウンロード完了。");
     };
