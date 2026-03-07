@@ -5,178 +5,229 @@
     <title>MUROBOX N40 Arranger</title>
     <script src="https://unpkg.com/@tonejs/midi"></script>
     <style>
-        body { font-family: -apple-system, sans-serif; background: #fdfdfd; padding: 20px; }
-        .container { max-width: 600px; margin: 0 auto; background: #fff; padding: 30px; border-radius: 12px; border: 1px solid #eee; box-shadow: 0 10px 30px rgba(0,0,0,0.05); }
-        h1 { font-size: 1.4rem; color: #333; margin-bottom: 20px; text-align: center; font-weight: 800; }
+        body { font-family: sans-serif; background: #f0f2f5; padding: 20px; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        h1 { text-align: center; font-size: 24px; margin-bottom: 20px; }
         
-        /* ドロップゾーン全体を相対配置の基準にする */
-        .drop-zone { position: relative; border: 2px dashed #3498db; padding: 50px 20px; text-align: center; color: #3498db; border-radius: 10px; margin-bottom: 20px; font-weight: bold; overflow: hidden; background: #fefefe; transition: background 0.2s; }
-        .drop-zone:hover { background: #f1f9ff; }
+        #dropZone { border: 3px dashed #007bff; padding: 40px; text-align: center; border-radius: 8px; background: #fafafa; transition: 0.2s; margin-bottom: 15px; }
+        #dropZone.dragover { background: #e6f2ff; border-color: #0056b3; }
         
-        /* 透明なファイル入力を画面上に大きく被せる（これでJSのバグを回避） */
-        .file-input-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+        .btn { display: inline-block; width: 100%; padding: 15px; background: #28a745; color: #fff; border: none; border-radius: 4px; font-size: 16px; font-weight: bold; cursor: pointer; margin-top: 10px; }
+        .btn:disabled { background: #cccccc; cursor: not-allowed; }
+        #selectBtn { width: auto; background: #007bff; padding: 10px 20px; margin-top: 10px; }
         
-        .btn { display: block; width: 100%; padding: 15px; background: #2ecc71; color: white; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 1.1rem; transition: background 0.2s; }
-        .btn:hover:not(:disabled) { background: #27ae60; }
-        .btn:disabled { background: #bdc3c7; cursor: not-allowed; }
-        .log { background: #2c3e50; color: #ecf0f1; padding: 15px; font-family: 'Courier New', monospace; font-size: 13px; height: 200px; overflow-y: auto; border-radius: 6px; margin-top: 20px; line-height: 1.5; }
+        #logWindow { background: #222; color: #0f0; padding: 15px; height: 180px; overflow-y: scroll; font-family: monospace; font-size: 13px; margin-top: 20px; border-radius: 4px; line-height: 1.6; }
     </style>
 </head>
 <body>
 
 <div class="container">
     <h1>MUROBOX N40 Arranger</h1>
-
-    <div class="drop-zone">
-        ここにMIDIファイルをドロップ<br>
-        <span style="font-size: 0.9em; font-weight: normal; color: #7f8c8d;">またはクリックして選択</span>
-        <input type="file" id="fileInput" class="file-input-overlay" accept=".mid,.midi">
+    
+    <div id="dropZone">
+        <p style="margin: 0 0 10px 0; font-weight: bold; font-size: 18px;">ここにMIDIファイルをドロップ</p>
+        <p style="margin: 0; font-size: 14px; color: #666;">または</p>
+        <button id="selectBtn" class="btn">ファイルを選択</button>
+        <input type="file" id="fileInput" accept=".mid,.midi" style="display:none">
     </div>
     
-    <div id="fileInfo" style="margin-bottom: 15px; text-align: center; font-weight: bold; color: #2c3e50;"></div>
-
+    <p id="fileInfo" style="text-align:center; font-weight:bold; color: #d35400;"></p>
+    
     <button id="processBtn" class="btn" disabled>最適化して保存</button>
-
-    <div class="log" id="logWindow">System Ready...<br></div>
+    
+    <div id="logWindow">System Ready...<br></div>
 </div>
 
 <script>
     const logEl = document.getElementById('logWindow');
+    const dropZone = document.getElementById('dropZone');
+    const selectBtn = document.getElementById('selectBtn');
     const fileInput = document.getElementById('fileInput');
     const processBtn = document.getElementById('processBtn');
-    
+    const fileInfo = document.getElementById('fileInfo');
+
     let currentArrayBuffer = null;
 
-    // MUROBOX N40 ハードウェア仕様 (F2 - C6)
-    const MIN_NOTE = 41; 
-    const MAX_NOTE = 84; 
+    // MUROBOX N40 ハードウェア仕様
+    const MIN_NOTE = 41; // F2
+    const MAX_NOTE = 84; // C6
     const EXCLUDED_NOTES = [42, 44, 46, 49]; // F#2, G#2, A#2, C#3
 
     function writeLog(msg) {
-        const div = document.createElement('div');
-        div.textContent = `> ${msg}`;
-        logEl.appendChild(div);
+        logEl.innerHTML += `> ${msg}<br>`;
         logEl.scrollTop = logEl.scrollHeight;
     }
 
-    // --- ファイル読み込み処理（ネイティブイベントのみ） ---
-    fileInput.addEventListener('change', async (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-        
-        try {
-            currentArrayBuffer = await file.arrayBuffer();
-            new Midi(currentArrayBuffer); // フォーマット検証
-            document.getElementById('fileInfo').textContent = `選択中: ${file.name}`;
-            writeLog(`File loaded: ${file.name}`);
-            processBtn.disabled = false;
-        } catch (err) {
-            writeLog(`[Error] 読み込み失敗: ${err.message}`);
-            processBtn.disabled = true;
+    // --- ファイル読み込み処理 ---
+    selectBtn.addEventListener('click', () => fileInput.click());
+
+    fileInput.addEventListener('change', (e) => {
+        if (e.target.files.length > 0) {
+            handleFile(e.target.files[0]);
+            fileInput.value = '';
         }
-        
-        // 同じファイルを再アップロードできるようにリセット
-        e.target.value = '';
     });
 
-    // --- コアロジック: 絶対にN40の40音の中に折り返す ---
+    dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropZone.classList.add('dragover');
+    });
+
+    dropZone.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('dragover');
+    });
+
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('dragover');
+        if (e.dataTransfer.files.length > 0) handleFile(e.dataTransfer.files[0]);
+    });
+
+    function handleFile(file) {
+        writeLog(`[Load] 読み込み開始: ${file.name}`);
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            try {
+                currentArrayBuffer = e.target.result;
+                const midi = new Midi(currentArrayBuffer);
+                let noteCount = 0;
+                midi.tracks.forEach(t => noteCount += t.notes.length);
+                writeLog(`[Success] 読み込み成功 (計 ${noteCount} 音符)`);
+                fileInfo.textContent = `選択中: ${file.name}`;
+                processBtn.disabled = false;
+            } catch (err) {
+                writeLog(`[Error] 不正なファイルです (${err.message})`);
+                processBtn.disabled = true;
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    }
+
+    // --- N40仕様への強制折り返しロジック ---
     function foldToN40(midiNote) {
         let folded = midiNote;
-        
         while (folded > MAX_NOTE) folded -= 12;
         while (folded < MIN_NOTE) folded += 12;
-        
-        if (EXCLUDED_NOTES.includes(folded)) {
-            folded += 12;
-        }
-        
+        // 範囲内だが除外音階を踏んでしまった場合は、必ず鳴らせる1オクターブ上へ
+        if (EXCLUDED_NOTES.includes(folded)) folded += 12;
         return folded;
     }
 
-    // --- 最適キー探索: メロディ死守アルゴリズム ---
-    processBtn.onclick = () => {
+    // --- 変換実行処理 ---
+    processBtn.addEventListener('click', () => {
         if (!currentArrayBuffer) return;
-        writeLog("最適トランスポーズを計算中...");
+        writeLog("[Process] 最適トランスポーズを計算中...");
 
-        const midiData = new Midi(currentArrayBuffer);
-        let allNotes = [];
-        midiData.tracks.forEach(t => t.notes.forEach(n => allNotes.push(n)));
+        try {
+            const midiData = new Midi(currentArrayBuffer);
+            let allNotes = [];
+            let minOrigNote = Infinity;
+            let maxOrigNote = -Infinity;
 
-        if (allNotes.length === 0) {
-            writeLog("[Error] 音符データがありません。");
-            return;
-        }
+            midiData.tracks.forEach(t => {
+                t.notes.forEach(n => {
+                    allNotes.push(n);
+                    if (n.midi < minOrigNote) minOrigNote = n.midi;
+                    if (n.midi > maxOrigNote) maxOrigNote = n.midi;
+                });
+            });
 
-        let bestT = 0;
-        let minPenalty = Infinity;
+            if (allNotes.length === 0) {
+                writeLog("[Error] 音符データがありません");
+                return;
+            }
 
-        // -48 〜 +48 半音の全パターンをシミュレーション
-        for (let t = -48; t <= 48; t++) {
-            let penalty = 0;
-            
-            for (let note of allNotes) {
-                let targetNote = note.midi + t;
-                let finalNote = foldToN40(targetNote);
+            let bestT = 0;
+            let minPenalty = Infinity;
+
+            // -48 〜 +48 半音の全パターンをシミュレーション
+            for (let t = -48; t <= 48; t++) {
                 
-                if (targetNote !== finalNote) {
-                    // 原曲の音が高いほどペナルティを重くし、メロディの折り返しを防ぐ
-                    penalty += Math.pow(2.0, note.midi / 10);
+                // 移調へのペナルティ計算（元のキーから離れるほど嫌がる）
+                let tPenalty = 0;
+                if (t !== 0 && t % 12 === 0) {
+                    // 原曲の調を保てるオクターブ移動はペナルティを安くする
+                    tPenalty = Math.abs(t) * 2; 
+                } else {
+                    // 中途半端な移調はペナルティを重くする
+                    tPenalty = Math.abs(t) * 5; 
+                }
+                
+                let penalty = tPenalty;
+
+                for (let note of allNotes) {
+                    let targetNote = note.midi + t;
+                    let finalNote = foldToN40(targetNote);
+                    
+                    // そのまま鳴らせずにオクターブ折り返しが発生した場合
+                    if (targetNote !== finalNote) {
+                        // 曲の中での音の高さ（0.0=最低音 〜 1.0=最高音）を算出
+                        let relHeight = (note.midi - minOrigNote) / (maxOrigNote - minOrigNote || 1);
+                        
+                        // 低音の折り返しは 20点、最高音（メロディ）の折り返しは 120点のペナルティ
+                        let notePenalty = 20 + (relHeight * 100);
+                        penalty += notePenalty;
+                    }
+                }
+
+                if (penalty < minPenalty) {
+                    minPenalty = penalty;
+                    bestT = t;
                 }
             }
 
-            if (penalty < minPenalty || (penalty === minPenalty && Math.abs(t) < Math.abs(bestT))) {
-                minPenalty = penalty;
-                bestT = t;
-            }
-        }
+            writeLog(`[Process] 最適キー決定: ${bestT > 0 ? '+' : ''}${bestT} 半音シフト`);
 
-        writeLog(`最適キー決定: ${bestT > 0 ? '+' : ''}${bestT} 半音シフト`);
-
-        // --- 新規MIDIファイルの構築 ---
-        const resultMidi = new Midi();
-        
-        if (midiData.header.tempos) {
-            midiData.header.tempos.forEach(t => resultMidi.header.tempos.push({ ticks: t.ticks, bpm: t.bpm }));
-        }
-        if (midiData.header.timeSignatures) {
-            midiData.header.timeSignatures.forEach(t => resultMidi.header.timeSignatures.push({ ticks: t.ticks, timeSignature: t.timeSignature }));
-        }
-
-        let foldedCount = 0;
-
-        midiData.tracks.forEach((track, i) => {
-            if (track.notes.length === 0) return;
+            // --- 新規ファイルの構築 ---
+            const resultMidi = new Midi();
             
-            const newTrack = resultMidi.addTrack();
-            newTrack.name = track.name || `Track ${i+1}`;
-            newTrack.channel = track.channel;
+            if (midiData.header.tempos) {
+                midiData.header.tempos.forEach(t => resultMidi.header.tempos.push({ ticks: t.ticks, bpm: t.bpm }));
+            }
+            if (midiData.header.timeSignatures) {
+                midiData.header.timeSignatures.forEach(t => resultMidi.header.timeSignatures.push({ ticks: t.ticks, timeSignature: t.timeSignature }));
+            }
 
-            track.notes.forEach(note => {
-                let targetNote = note.midi + bestT;
-                let finalNote = foldToN40(targetNote);
+            let foldedCount = 0;
+            midiData.tracks.forEach((track, i) => {
+                if (track.notes.length === 0) return;
+                
+                const newTrack = resultMidi.addTrack();
+                newTrack.name = track.name || `Track ${i+1}`;
+                newTrack.channel = track.channel;
 
-                if (targetNote !== finalNote) foldedCount++;
-
-                newTrack.addNote({
-                    midi: finalNote,
-                    ticks: note.ticks,
-                    durationTicks: note.durationTicks,
-                    velocity: note.velocity
+                track.notes.forEach(note => {
+                    let targetNote = note.midi + bestT;
+                    let finalNote = foldToN40(targetNote);
+                    
+                    if (targetNote !== finalNote) foldedCount++;
+                    
+                    newTrack.addNote({
+                        midi: finalNote,
+                        ticks: note.ticks,
+                        durationTicks: note.durationTicks,
+                        velocity: note.velocity
+                    });
                 });
             });
-        });
 
-        writeLog(`処理完了。全 ${allNotes.length} 音をN40に配置しました。`);
-        writeLog(`(伴奏等でオクターブ折り返しが発生した音: ${foldedCount} 音)`);
-        
-        const blob = new Blob([resultMidi.toArray()], { type: "audio/midi" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `MURO_N40_${bestT > 0 ? 'plus'+bestT : bestT}_${Date.now()}.mid`;
-        a.click();
-        writeLog("ダウンロードが完了しました。");
-    };
+            writeLog(`[Success] 処理完了。伴奏等の個別折り返し: ${foldedCount} 音`);
+
+            // ダウンロード実行
+            const blob = new Blob([resultMidi.toArray()], { type: "audio/midi" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `MURO_N40_${bestT > 0 ? 'plus'+bestT : bestT}_${Date.now()}.mid`;
+            a.click();
+            URL.revokeObjectURL(url);
+            writeLog("[Success] ダウンロードを開始しました");
+            
+        } catch (err) {
+            writeLog(`[Fatal Error] 処理中にエラー発生: ${err.message}`);
+        }
+    });
 </script>
 
 </body>
