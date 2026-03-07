@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>MUROBOX N40 Filter - Strict Mode</title>
+    <title>MUROBOX N40 Filter - Auto Transpose Mode</title>
     <script src="https://unpkg.com/@tonejs/midi"></script>
     <style>
         body { font-family: -apple-system, sans-serif; background: #fdfdfd; padding: 20px; }
@@ -12,19 +12,12 @@
         .btn { display: block; width: 100%; padding: 15px; background: #2ecc71; color: white; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 1rem; }
         .btn:disabled { background: #ddd; cursor: not-allowed; }
         .log { background: #f8f9fa; color: #666; padding: 15px; font-family: monospace; font-size: 12px; height: 180px; overflow-y: auto; border-radius: 6px; margin-top: 20px; border: 1px solid #eee; }
-        .config { margin-bottom: 20px; font-size: 0.9rem; color: #555; background: #fff4e5; padding: 10px; border-radius: 6px; }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <h1>MUROBOX N40 Filter <span style="font-size: 0.8rem; opacity: 0.6;">(Strict Mode)</span></h1>
-    
-    <div class="config">
-        <strong>現在の設定:</strong><br>
-        ・オクターブ移動しても範囲外の音は削除<br>
-        ・N40非対応の低音半音は削除
-    </div>
+    <h1>MUROBOX N40 Filter</h1>
 
     <div class="drop-zone" id="dropZone">
         ここにMIDIファイルをドロップ
@@ -33,7 +26,7 @@
 
     <div id="fileInfo" style="margin-bottom: 10px; text-align: center; font-weight: bold;"></div>
 
-    <button id="processBtn" class="btn" disabled>変換して保存</button>
+    <button id="processBtn" class="btn" disabled>最適化して保存</button>
 
     <div class="log" id="logWindow">ログ: 待機中...</div>
 </div>
@@ -44,7 +37,7 @@
     const dropZone = document.getElementById('dropZone');
     const processBtn = document.getElementById('processBtn');
     
-    let loadedMidi = null;
+    let currentArrayBuffer = null;
 
     // N40の厳密な仕様
     const MIN = 53; // F2
@@ -64,63 +57,132 @@
     async function handleFile(file) {
         if (!file) return;
         try {
-            const arrayBuffer = await file.arrayBuffer();
-            loadedMidi = new Midi(arrayBuffer);
+            currentArrayBuffer = await file.arrayBuffer();
+            // 読み込みテスト
+            new Midi(currentArrayBuffer);
             document.getElementById('fileInfo').textContent = `選択中: ${file.name}`;
             writeLog(`ファイルを読み込みました: ${file.name}`);
             processBtn.disabled = false;
         } catch (err) {
             writeLog(`エラー: ${err.message}`);
+            processBtn.disabled = true;
         }
     }
 
-    processBtn.onclick = () => {
-        if (!loadedMidi) return;
-        writeLog("フィルタリング処理を開始...");
+    // ノートをN40の範囲に収めるための最適なオクターブシフトを探す関数
+    function getBestOctaveShift(m) {
+        // シフトなし(0)を最優先
+        const shifts = [0, 12, -12, 24, -24, 36, -36, 48, -48, 60, -60];
+        for (let shift of shifts) {
+            let v = m + shift;
+            if (v >= MIN && v <= MAX && !INVALID.includes(v)) {
+                return v;
+            }
+        }
+        return null; // 全く演奏不可な場合
+    }
 
-        const resultMidi = new Midi();
-        const mainTrack = resultMidi.addTrack();
-        mainTrack.name = "N40 Filtered Track";
+    // 特定の移調量(t)を適用した際の、削除数と個別オクターブ移動数を評価する関数
+    function evaluateTranspose(notes, t) {
+        let dropped = 0;
+        let octaveShifts = 0;
+
+        for (let note of notes) {
+            let m = note.midi + t;
+            let bestM = getBestOctaveShift(m);
+            
+            if (bestM === null) {
+                dropped++;
+            } else if (bestM !== m) {
+                octaveShifts++;
+            }
+        }
+        return { dropped, octaveShifts };
+    }
+
+    processBtn.onclick = () => {
+        if (!currentArrayBuffer) return;
+        writeLog("最適なトランスポーズ（全体スライド）量を計算中...");
+
+        // 毎回新しくパースし直す（テンポや複数トラック等の元データを保持するため）
+        const midiData = new Midi(currentArrayBuffer);
+
+        let allNotes = [];
+        midiData.tracks.forEach(track => {
+            track.notes.forEach(note => allNotes.push(note));
+        });
+
+        if (allNotes.length === 0) {
+            writeLog("エラー: 音符が見つかりません。");
+            return;
+        }
+
+        // 最適なトランスポーズ量を探す (-48 〜 +48 半音)
+        // 個別のオクターブ移動（和音の崩れ）を防ぐため、曲全体を大きくスライドさせることも許可する
+        const tCandidates = [];
+        for (let i = 0; i <= 48; i++) {
+            tCandidates.push(i);
+            if (i !== 0) tCandidates.push(-i);
+        }
+        
+        let bestT = 0;
+        let minDropped = Infinity;
+        let minShifts = Infinity;
+        let bestAbsT = Infinity;
+
+        for (let t of tCandidates) {
+            let res = evaluateTranspose(allNotes, t);
+            
+            if (res.dropped < minDropped) {
+                minDropped = res.dropped;
+                minShifts = res.octaveShifts;
+                bestT = t;
+                bestAbsT = Math.abs(t);
+            } else if (res.dropped === minDropped) {
+                if (res.octaveShifts < minShifts) {
+                    minShifts = res.octaveShifts;
+                    bestT = t;
+                    bestAbsT = Math.abs(t);
+                } else if (res.octaveShifts === minShifts) {
+                    // 同条件なら移動量が少ない方を優先
+                    if (Math.abs(t) < bestAbsT) {
+                        bestT = t;
+                        bestAbsT = Math.abs(t);
+                    }
+                }
+            }
+        }
+
+        writeLog(`最適キー決定: ${bestT > 0 ? '+' : ''}${bestT} 半音全体スライド`);
+        writeLog(`(想定削除数: ${minDropped}音 / 個別オクターブ移動: ${minShifts}音)`);
 
         let keptCount = 0;
         let removedCount = 0;
 
-        loadedMidi.tracks.forEach(track => {
-            track.notes.forEach(note => {
-                let m = note.midi;
+        midiData.tracks.forEach(track => {
+            // 条件を満たさないノートを除外しながら、midiノート番号を上書き
+            track.notes = track.notes.filter(note => {
+                let m = note.midi + bestT;
+                let finalM = getBestOctaveShift(m);
 
-                // 1. オクターブ移動を試みる
-                if (m < MIN) {
-                    while (m < MIN && m <= 115) m += 12;
-                } else if (m > MAX) {
-                    while (m > MAX && m >= 12) m -= 12;
-                }
-
-                // 2. 最終チェック（範囲外、または非対応半音なら切り捨てる）
-                const isOutOfRange = (m < MIN || m > MAX);
-                const isInvalidSemi = INVALID.includes(m);
-
-                if (isOutOfRange || isInvalidSemi) {
+                if (finalM === null) {
                     removedCount++;
+                    return false; // 削除
                 } else {
-                    mainTrack.addNote({
-                        midi: m,
-                        time: note.time,
-                        duration: note.duration,
-                        velocity: note.velocity
-                    });
+                    note.midi = finalM;
                     keptCount++;
+                    return true; // 保持
                 }
             });
         });
 
-        writeLog(`処理完了。演奏可能: ${keptCount}音 / 削除: ${removedCount}音`);
+        writeLog(`処理完了。演奏可能: ${keptCount}音 / 最終削除: ${removedCount}音`);
         
-        const blob = new Blob([resultMidi.toArray()], { type: "audio/midi" });
+        const blob = new Blob([midiData.toArray()], { type: "audio/midi" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `n40_strict_${Date.now()}.mid`;
+        a.download = `n40_transposed_${bestT}_${Date.now()}.mid`;
         a.click();
         writeLog("ダウンロード完了。");
     };
