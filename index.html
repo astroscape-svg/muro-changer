@@ -48,4 +48,46 @@
     const EXCLUDED_NOTES = [42, 44, 46, 49]; // F#2, G#2, A#2, C#3
 
     function writeLog(msg) {
-        const div = document.createElement('div
+        const div = document.createElement('div');
+        div.textContent = `> ${msg}`;
+        logEl.appendChild(div);
+        logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    // --- ファイルアップロード処理（安全なリセット方式に変更） ---
+    dropZone.addEventListener('click', () => fileInput.click());
+
+    // 読み込み完了前ではなく、クリックしてファイルを選ぶ瞬間に履歴を消す
+    fileInput.addEventListener('click', function() {
+        this.value = null;
+    });
+
+    fileInput.addEventListener('change', (e) => {
+        if (e.target.files.length > 0) {
+            handleFile(e.target.files[0]);
+        }
+    });
+
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(evt => {
+        dropZone.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); }, false);
+    });
+
+    ['dragenter', 'dragover'].forEach(evt => {
+        dropZone.addEventListener(evt, () => dropZone.classList.add('dragover'), false);
+    });
+
+    ['dragleave', 'drop'].forEach(evt => {
+        dropZone.addEventListener(evt, () => dropZone.classList.remove('dragover'), false);
+    });
+
+    dropZone.addEventListener('drop', (e) => {
+        if (e.dataTransfer.files.length > 0) handleFile(e.dataTransfer.files[0]);
+    }, false);
+
+    async function handleFile(file) {
+        if (!file) return;
+        try {
+            currentArrayBuffer = await file.arrayBuffer();
+            new Midi(currentArrayBuffer); // フォーマット検証
+            document.getElementById('fileInfo').textContent = `選択中: ${file.name}`;
+            writeLog(`File loaded: ${file.name}`);
