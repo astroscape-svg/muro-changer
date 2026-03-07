@@ -104,7 +104,6 @@
         if (!currentArrayBuffer) return;
         writeLog("最適なトランスポーズ（全体スライド）量を計算中...");
 
-        // 毎回新しくパースし直す（テンポや複数トラック等の元データを保持するため）
         const midiData = new Midi(currentArrayBuffer);
 
         let allNotes = [];
@@ -118,7 +117,6 @@
         }
 
         // 最適なトランスポーズ量を探す (-48 〜 +48 半音)
-        // 個別のオクターブ移動（和音の崩れ）を防ぐため、曲全体を大きくスライドさせることも許可する
         const tCandidates = [];
         for (let i = 0; i <= 48; i++) {
             tCandidates.push(i);
@@ -156,29 +154,49 @@
         writeLog(`最適キー決定: ${bestT > 0 ? '+' : ''}${bestT} 半音全体スライド`);
         writeLog(`(想定削除数: ${minDropped}音 / 個別オクターブ移動: ${minShifts}音)`);
 
+        // --- 修正箇所：新規のクリーンなMIDIファイルとして再構築する ---
+        const resultMidi = new Midi();
+        
+        // テンポ情報があればコピーする
+        if (midiData.header && midiData.header.tempos) {
+            midiData.header.tempos.forEach(tempoObj => {
+                resultMidi.header.tempos.push({
+                    ticks: tempoObj.ticks,
+                    bpm: tempoObj.bpm,
+                    time: tempoObj.time
+                });
+            });
+        }
+
+        const mainTrack = resultMidi.addTrack();
+        mainTrack.name = "N40 Auto Transposed";
+
         let keptCount = 0;
         let removedCount = 0;
 
         midiData.tracks.forEach(track => {
-            // 条件を満たさないノートを除外しながら、midiノート番号を上書き
-            track.notes = track.notes.filter(note => {
+            track.notes.forEach(note => {
                 let m = note.midi + bestT;
                 let finalM = getBestOctaveShift(m);
 
                 if (finalM === null) {
                     removedCount++;
-                    return false; // 削除
                 } else {
-                    note.midi = finalM;
+                    // クリーンなトラックに音符を新しく追加していく
+                    mainTrack.addNote({
+                        midi: finalM,
+                        time: note.time,
+                        duration: note.duration,
+                        velocity: note.velocity
+                    });
                     keptCount++;
-                    return true; // 保持
                 }
             });
         });
 
         writeLog(`処理完了。演奏可能: ${keptCount}音 / 最終削除: ${removedCount}音`);
         
-        const blob = new Blob([midiData.toArray()], { type: "audio/midi" });
+        const blob = new Blob([resultMidi.toArray()], { type: "audio/midi" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
