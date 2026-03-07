@@ -17,7 +17,7 @@
 <body>
 
 <div class="container">
-    <h1>MUROBOX N40 Filter<br><span style="font-size: 0.8rem; opacity: 0.6;">(Melody Protect Mode)</span></h1>
+    <h1>MUROBOX N40 Filter<br><span style="font-size: 0.8rem; opacity: 0.6;">(F2-C6 / Melody Protect Mode)</span></h1>
 
     <div class="drop-zone" id="dropZone">
         ここにMIDIファイルをドロップ
@@ -39,10 +39,10 @@
     
     let currentArrayBuffer = null;
 
-    // N40の厳密な仕様
-    const MIN = 53; // F2
-    const MAX = 105; // A6
-    const INVALID = [54, 56, 58, 61]; // F#2, G#2, A#2, C#3
+    // ご指摘いただいたN40の正確な仕様 (スタンダードMIDI規格 C4=60準拠)
+    const MIN = 41; // F2
+    const MAX = 84; // C6
+    const INVALID = [42, 44, 46, 49]; // F#2, G#2, A#2, C#3 (演奏不可)
 
     function writeLog(msg) {
         const div = document.createElement('div');
@@ -68,147 +68,9 @@
         }
     }
 
-    // 最適なオクターブシフトを探す関数（削除をゼロにするため探索範囲を拡大）
+    // 最適なオクターブシフトを探す関数（N40の正確な範囲 F2-C6 内で探す）
     function getBestOctaveShift(m) {
         let bestM = null;
         let minShiftDist = Infinity;
         
-        // -10 から +10 オクターブまで広く探索し、必ずN40の範囲に収める
-        for (let i = -10; i <= 10; i++) {
-            let v = m + (i * 12);
-            if (v >= MIN && v <= MAX && !INVALID.includes(v)) {
-                let dist = Math.abs(i);
-                if (dist < minShiftDist) {
-                    minShiftDist = dist;
-                    bestM = v;
-                }
-            }
-        }
-        return bestM;
-    }
-
-    // 移調の評価（メロディ死守の指数関数ペナルティ）
-    function evaluateTranspose(notes, t) {
-        let penalty = 0;
-        let droppedCount = 0;
-        let shiftedCount = 0;
-
-        for (let note of notes) {
-            let m = note.midi + t;
-            let bestM = getBestOctaveShift(m);
-            
-            // 指数関数による重み付け（原曲の音高ベース）
-            // 1半音高いだけで1.5倍、1オクターブで約130倍、2オクターブで約16000倍優先される
-            let weight = Math.pow(1.5, note.midi - 40);
-
-            if (bestM === null) {
-                // 理論上ここは通らなくなりますが念のため
-                penalty += weight * 10000;
-                droppedCount++;
-            } else if (bestM !== m) {
-                // オクターブ折り返し（スライドできず外れた）場合のペナルティ
-                penalty += weight;
-                shiftedCount++;
-            }
-        }
-        return { penalty, droppedCount, shiftedCount };
-    }
-
-    processBtn.onclick = () => {
-        if (!currentArrayBuffer) return;
-        writeLog("メロディライン（最高音）を最優先して最適キーを計算中...");
-
-        const midiData = new Midi(currentArrayBuffer);
-        let allNotes = [];
-        midiData.tracks.forEach(track => {
-            track.notes.forEach(note => allNotes.push(note));
-        });
-
-        if (allNotes.length === 0) {
-            writeLog("エラー: 音符が見つかりません。");
-            return;
-        }
-
-        const tCandidates = [];
-        for (let i = 0; i <= 48; i++) {
-            tCandidates.push(i);
-            if (i !== 0) tCandidates.push(-i);
-        }
-        
-        let bestT = 0;
-        let minPenalty = Infinity;
-        let bestAbsT = Infinity;
-
-        for (let t of tCandidates) {
-            let res = evaluateTranspose(allNotes, t);
-            
-            if (res.penalty < minPenalty) {
-                minPenalty = res.penalty;
-                bestT = t;
-                bestAbsT = Math.abs(t);
-            } 
-            else if (res.penalty === minPenalty) {
-                if (Math.abs(t) < bestAbsT) {
-                    bestT = t;
-                    bestAbsT = Math.abs(t);
-                }
-            }
-        }
-
-        let finalEval = evaluateTranspose(allNotes, bestT);
-        writeLog(`最適キー決定: ${bestT > 0 ? '+' : ''}${bestT} 半音全体スライド`);
-        writeLog(`(伴奏などの折り返し移動: ${finalEval.shiftedCount}音)`);
-
-        const resultMidi = new Midi();
-        
-        if (midiData.header) {
-            if (midiData.header.tempos) {
-                midiData.header.tempos.forEach(t => resultMidi.header.tempos.push({ ticks: t.ticks, bpm: t.bpm }));
-            }
-            if (midiData.header.timeSignatures) {
-                midiData.header.timeSignatures.forEach(t => resultMidi.header.timeSignatures.push({ ticks: t.ticks, timeSignature: t.timeSignature }));
-            }
-        }
-
-        let keptCount = 0;
-        let removedCount = 0;
-
-        midiData.tracks.forEach((track, i) => {
-            if (track.notes.length === 0) return;
-            
-            const newTrack = resultMidi.addTrack();
-            newTrack.name = track.name || `Track ${i+1}`;
-            newTrack.channel = track.channel;
-
-            track.notes.forEach(note => {
-                let m = note.midi + bestT;
-                let finalM = getBestOctaveShift(m);
-
-                if (finalM === null) {
-                    removedCount++;
-                } else {
-                    newTrack.addNote({
-                        midi: finalM,
-                        ticks: note.ticks,
-                        durationTicks: note.durationTicks,
-                        velocity: note.velocity
-                    });
-                    keptCount++;
-                }
-            });
-        });
-
-        writeLog(`処理完了。演奏可能: ${keptCount}音 / 削除: ${removedCount}音`);
-        
-        const blob = new Blob([resultMidi.toArray()], { type: "audio/midi" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `n40_melody_protect_${bestT}_${Date.now()}.mid`;
-        a.click();
-        writeLog("ダウンロード完了。");
-    };
-</script>
-
-</body>
-</html>
+        //
