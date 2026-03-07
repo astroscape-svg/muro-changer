@@ -22,8 +22,8 @@
 
     <div class="drop-zone" id="dropZone">
         ここにMIDIファイルをドロップ、またはクリックして選択
-        <input type="file" id="fileInput" accept=".mid,.midi" style="display:none">
     </div>
+    <input type="file" id="fileInput" accept=".mid,.midi" style="display:none">
 
     <div id="fileInfo" style="margin-bottom: 10px; text-align: center; font-weight: bold;"></div>
 
@@ -40,7 +40,7 @@
     
     let currentArrayBuffer = null;
 
-    // ご指摘いただいたN40の正確な仕様 (スタンダードMIDI規格 C4=60準拠)
+    // N40の正確な仕様 (スタンダードMIDI規格 C4=60準拠)
     const MIN = 41; // F2
     const MAX = 84; // C6
     const INVALID = [42, 44, 46, 49]; // F#2, G#2, A#2, C#3 (演奏不可)
@@ -52,37 +52,46 @@
         logEl.scrollTop = logEl.scrollHeight;
     }
 
-    // --- 【修正】ファイル選択・ドラッグ＆ドロップの挙動を改善 ---
-    dropZone.onclick = () => fileInput.click();
-
-    // 同じファイルを連続で選択できるように入力をリセット
-    fileInput.onclick = function() {
-        this.value = null;
-    };
-
-    fileInput.onchange = (e) => {
-        if (e.target.files.length > 0) handleFile(e.target.files[0]);
-    };
-
-    // ドラッグ＆ドロップのイベント処理を追加
-    dropZone.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        dropZone.classList.add('dragover');
+    // --- ファイル選択とドラッグ＆ドロップの確実な処理 ---
+    dropZone.addEventListener('click', () => {
+        fileInput.click();
     });
 
-    dropZone.addEventListener('dragleave', (e) => {
-        e.preventDefault();
-        dropZone.classList.remove('dragover');
+    fileInput.addEventListener('change', (e) => {
+        if (e.target.files.length > 0) {
+            handleFile(e.target.files[0]);
+            // 同じファイルを再度選択できるようにリセット
+            e.target.value = ''; 
+        }
     });
 
+    // ドロップ領域でのブラウザデフォルト動作をキャンセル
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, preventDefaults, false);
+        document.body.addEventListener(eventName, preventDefaults, false);
+    });
+
+    function preventDefaults(e) {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+
+    // 見た目のフィードバック
+    ['dragenter', 'dragover'].forEach(eventName => {
+        dropZone.addEventListener(eventName, () => dropZone.classList.add('dragover'), false);
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, () => dropZone.classList.remove('dragover'), false);
+    });
+
+    // ドロップ時の処理
     dropZone.addEventListener('drop', (e) => {
-        e.preventDefault();
-        dropZone.classList.remove('dragover');
         if (e.dataTransfer.files.length > 0) {
             handleFile(e.dataTransfer.files[0]);
         }
-    });
-    // -------------------------------------------------------------
+    }, false);
+    // ---------------------------------------------------
 
     async function handleFile(file) {
         if (!file) return;
