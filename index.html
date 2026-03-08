@@ -12,6 +12,12 @@
         #dropZone { border: 3px dashed #007bff; padding: 40px; text-align: center; border-radius: 8px; background: #fafafa; transition: 0.2s; margin-bottom: 15px; }
         #dropZone.dragover { background: #e6f2ff; border-color: #0056b3; }
         
+        .mode-switch { background: #f8f9fa; border: 1px solid #e9ecef; padding: 15px; border-radius: 8px; margin-bottom: 15px; }
+        .mode-switch label { display: block; cursor: pointer; font-weight: bold; margin-bottom: 12px; font-size: 15px; }
+        .mode-switch label:last-child { margin-bottom: 0; }
+        .mode-switch input[type="radio"] { margin-right: 8px; transform: scale(1.2); }
+        .mode-desc { display: block; font-size: 12px; color: #666; font-weight: normal; margin-left: 26px; margin-top: 4px; line-height: 1.4; }
+
         .btn { display: inline-block; width: 100%; padding: 15px; background: #28a745; color: #fff; border: none; border-radius: 4px; font-size: 16px; font-weight: bold; cursor: pointer; margin-top: 10px; }
         .btn:disabled { background: #cccccc; cursor: not-allowed; }
         #selectBtn { width: auto; background: #007bff; padding: 10px 20px; margin-top: 10px; }
@@ -32,6 +38,17 @@
     </div>
     
     <p id="fileInfo" style="text-align:center; font-weight:bold; color: #d35400;"></p>
+
+    <div class="mode-switch">
+        <label>
+            <input type="radio" name="convertMode" value="melody" checked> メロディ死守モード
+            <span class="mode-desc">一番高い音がC6を超えないことを絶対条件とし、原曲の調（オクターブ移動）を優先して保ちます。</span>
+        </label>
+        <label>
+            <input type="radio" name="convertMode" value="range"> 全体バランスモード
+            <span class="mode-desc">メロディのオクターブが変わっても、曲全体で「はみ出して折り返される音」が一番少なくなるキーを探します。</span>
+        </label>
+    </div>
     
     <button id="processBtn" class="btn" disabled>最適化して保存</button>
     
@@ -68,16 +85,8 @@
         }
     });
 
-    dropZone.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        dropZone.classList.add('dragover');
-    });
-
-    dropZone.addEventListener('dragleave', (e) => {
-        e.preventDefault();
-        dropZone.classList.remove('dragover');
-    });
-
+    dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+    dropZone.addEventListener('dragleave', (e) => { e.preventDefault(); dropZone.classList.remove('dragover'); });
     dropZone.addEventListener('drop', (e) => {
         e.preventDefault();
         dropZone.classList.remove('dragover');
@@ -109,7 +118,6 @@
         let folded = midiNote;
         while (folded > MAX_NOTE) folded -= 12;
         while (folded < MIN_NOTE) folded += 12;
-        // 範囲内だが除外音階を踏んでしまった場合は、必ず鳴らせる1オクターブ上へ
         if (EXCLUDED_NOTES.includes(folded)) folded += 12;
         return folded;
     }
@@ -117,118 +125,16 @@
     // --- 変換実行処理 ---
     processBtn.addEventListener('click', () => {
         if (!currentArrayBuffer) return;
-        writeLog("[Process] 最適トランスポーズを計算中...");
+        
+        const mode = document.querySelector('input[name="convertMode"]:checked').value;
+        const modeName = mode === 'melody' ? 'メロディ死守モード' : '全体バランスモード';
+        writeLog(`[Process] ${modeName} で最適キーを計算中...`);
 
         try {
             const midiData = new Midi(currentArrayBuffer);
             let allNotes = [];
-            let minOrigNote = Infinity;
             let maxOrigNote = -Infinity;
 
             midiData.tracks.forEach(t => {
                 t.notes.forEach(n => {
-                    allNotes.push(n);
-                    if (n.midi < minOrigNote) minOrigNote = n.midi;
-                    if (n.midi > maxOrigNote) maxOrigNote = n.midi;
-                });
-            });
-
-            if (allNotes.length === 0) {
-                writeLog("[Error] 音符データがありません");
-                return;
-            }
-
-            let bestT = 0;
-            let minPenalty = Infinity;
-
-            // -48 〜 +48 半音の全パターンをシミュレーション
-            for (let t = -48; t <= 48; t++) {
-                
-                // 移調へのペナルティ計算（元のキーから離れるほど嫌がる）
-                let tPenalty = 0;
-                if (t !== 0 && t % 12 === 0) {
-                    // 原曲の調を保てるオクターブ移動はペナルティを安くする
-                    tPenalty = Math.abs(t) * 2; 
-                } else {
-                    // 中途半端な移調はペナルティを重くする
-                    tPenalty = Math.abs(t) * 5; 
-                }
-                
-                let penalty = tPenalty;
-
-                for (let note of allNotes) {
-                    let targetNote = note.midi + t;
-                    let finalNote = foldToN40(targetNote);
-                    
-                    // そのまま鳴らせずにオクターブ折り返しが発生した場合
-                    if (targetNote !== finalNote) {
-                        // 曲の中での音の高さ（0.0=最低音 〜 1.0=最高音）を算出
-                        let relHeight = (note.midi - minOrigNote) / (maxOrigNote - minOrigNote || 1);
-                        
-                        // 低音の折り返しは 20点、最高音（メロディ）の折り返しは 120点のペナルティ
-                        let notePenalty = 20 + (relHeight * 100);
-                        penalty += notePenalty;
-                    }
-                }
-
-                if (penalty < minPenalty) {
-                    minPenalty = penalty;
-                    bestT = t;
-                }
-            }
-
-            writeLog(`[Process] 最適キー決定: ${bestT > 0 ? '+' : ''}${bestT} 半音シフト`);
-
-            // --- 新規ファイルの構築 ---
-            const resultMidi = new Midi();
-            
-            if (midiData.header.tempos) {
-                midiData.header.tempos.forEach(t => resultMidi.header.tempos.push({ ticks: t.ticks, bpm: t.bpm }));
-            }
-            if (midiData.header.timeSignatures) {
-                midiData.header.timeSignatures.forEach(t => resultMidi.header.timeSignatures.push({ ticks: t.ticks, timeSignature: t.timeSignature }));
-            }
-
-            let foldedCount = 0;
-            midiData.tracks.forEach((track, i) => {
-                if (track.notes.length === 0) return;
-                
-                const newTrack = resultMidi.addTrack();
-                newTrack.name = track.name || `Track ${i+1}`;
-                newTrack.channel = track.channel;
-
-                track.notes.forEach(note => {
-                    let targetNote = note.midi + bestT;
-                    let finalNote = foldToN40(targetNote);
-                    
-                    if (targetNote !== finalNote) foldedCount++;
-                    
-                    newTrack.addNote({
-                        midi: finalNote,
-                        ticks: note.ticks,
-                        durationTicks: note.durationTicks,
-                        velocity: note.velocity
-                    });
-                });
-            });
-
-            writeLog(`[Success] 処理完了。伴奏等の個別折り返し: ${foldedCount} 音`);
-
-            // ダウンロード実行
-            const blob = new Blob([resultMidi.toArray()], { type: "audio/midi" });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = `MURO_N40_${bestT > 0 ? 'plus'+bestT : bestT}_${Date.now()}.mid`;
-            a.click();
-            URL.revokeObjectURL(url);
-            writeLog("[Success] ダウンロードを開始しました");
-            
-        } catch (err) {
-            writeLog(`[Fatal Error] 処理中にエラー発生: ${err.message}`);
-        }
-    });
-</script>
-
-</body>
-</html>
+                    allNotes.push(n
