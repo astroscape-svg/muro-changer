@@ -65,20 +65,19 @@
 
     let currentArrayBuffer = null;
 
-    // MUROBOX N40 ハードウェア仕様
-    const MIN_NOTE = 41; // F2
-    const MAX_NOTE = 84; // C6
-    const EXCLUDED_NOTES = [42, 44, 46, 49]; // F#2, G#2, A#2, C#3
+    // MUROBOX N40 ハードウェア仕様 (Yamaha規格 C3=60 準拠)
+    const MIN_NOTE = 53; // F2
+    const MAX_NOTE = 96; // C6
+    const EXCLUDED_NOTES = [54, 56, 58, 61]; // F#2, G#2, A#2, C#3
 
     function writeLog(msg) {
         logEl.innerHTML += `> ${msg}<br>`;
         logEl.scrollTop = logEl.scrollHeight;
     }
 
-    // --- ファイル読み込み処理（バグを修正した安全版） ---
+    // --- ファイル読み込み処理 ---
     selectBtn.addEventListener('click', () => fileInput.click());
 
-    // クリックした瞬間にリセット（読み込み後ではなく、ファイルを選ぶ前に消すのが正解）
     fileInput.addEventListener('click', function() {
         this.value = null;
     });
@@ -86,7 +85,6 @@
     fileInput.addEventListener('change', (e) => {
         if (e.target.files.length > 0) {
             handleFile(e.target.files[0]);
-            // ここにあった誤ったリセット処理を削除しました
         }
     });
 
@@ -123,6 +121,7 @@
         let folded = midiNote;
         while (folded > MAX_NOTE) folded -= 12;
         while (folded < MIN_NOTE) folded += 12;
+        // 範囲内だが除外音階を踏んでしまった場合は、必ず鳴らせる1オクターブ上へ
         if (EXCLUDED_NOTES.includes(folded)) folded += 12;
         return folded;
     }
