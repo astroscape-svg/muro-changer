@@ -75,13 +75,18 @@
         logEl.scrollTop = logEl.scrollHeight;
     }
 
-    // --- ファイル読み込み処理 ---
+    // --- ファイル読み込み処理（バグを修正した安全版） ---
     selectBtn.addEventListener('click', () => fileInput.click());
+
+    // クリックした瞬間にリセット（読み込み後ではなく、ファイルを選ぶ前に消すのが正解）
+    fileInput.addEventListener('click', function() {
+        this.value = null;
+    });
 
     fileInput.addEventListener('change', (e) => {
         if (e.target.files.length > 0) {
             handleFile(e.target.files[0]);
-            fileInput.value = '';
+            // ここにあった誤ったリセット処理を削除しました
         }
     });
 
@@ -137,4 +142,104 @@
 
             midiData.tracks.forEach(t => {
                 t.notes.forEach(n => {
-                    allNotes.push(n
+                    allNotes.push(n);
+                    if (n.midi > maxOrigNote) maxOrigNote = n.midi;
+                });
+            });
+
+            if (allNotes.length === 0) {
+                writeLog("[Error] 音符データがありません");
+                return;
+            }
+
+            let bestT = 0;
+            let minPenalty = Infinity;
+
+            // -48 〜 +48 半音の全パターンをシミュレーション
+            for (let t = -48; t <= 48; t++) {
+                let penalty = 0;
+                
+                // 折り返される音の数をカウント
+                let foldedCount = 0;
+                for (let note of allNotes) {
+                    let targetNote = note.midi + t;
+                    let finalNote = foldToN40(targetNote);
+                    if (targetNote !== finalNote) {
+                        foldedCount++;
+                    }
+                }
+
+                if (mode === 'melody') {
+                    // 【メロディ死守モードのルール】
+                    if (maxOrigNote + t > MAX_NOTE) penalty += 1000000;
+                    if (t % 12 !== 0) penalty += 1000;
+                    penalty += foldedCount * 10;
+                    penalty += Math.abs(t);
+                } else {
+                    // 【全体バランスモードのルール】
+                    penalty += foldedCount * 1000;
+                    penalty += Math.abs(t);
+                }
+
+                if (penalty < minPenalty) {
+                    minPenalty = penalty;
+                    bestT = t;
+                }
+            }
+
+            writeLog(`[Process] 最適キー決定: ${bestT > 0 ? '+' : ''}${bestT} 半音シフト`);
+
+            // --- 新規ファイルの構築 ---
+            const resultMidi = new Midi();
+            
+            if (midiData.header.tempos) {
+                midiData.header.tempos.forEach(t => resultMidi.header.tempos.push({ ticks: t.ticks, bpm: t.bpm }));
+            }
+            if (midiData.header.timeSignatures) {
+                midiData.header.timeSignatures.forEach(t => resultMidi.header.timeSignatures.push({ ticks: t.ticks, timeSignature: t.timeSignature }));
+            }
+
+            let foldedCount = 0;
+            midiData.tracks.forEach((track, i) => {
+                if (track.notes.length === 0) return;
+                
+                const newTrack = resultMidi.addTrack();
+                newTrack.name = track.name || `Track ${i+1}`;
+                newTrack.channel = track.channel;
+
+                track.notes.forEach(note => {
+                    let targetNote = note.midi + bestT;
+                    let finalNote = foldToN40(targetNote);
+                    
+                    if (targetNote !== finalNote) foldedCount++;
+                    
+                    newTrack.addNote({
+                        midi: finalNote,
+                        ticks: note.ticks,
+                        durationTicks: note.durationTicks,
+                        velocity: note.velocity
+                    });
+                });
+            });
+
+            writeLog(`[Success] 処理完了。個別に折り返された音: ${foldedCount} 音`);
+
+            // ダウンロード実行
+            const blob = new Blob([resultMidi.toArray()], { type: "audio/midi" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            const prefix = mode === 'melody' ? 'mel' : 'bal';
+            a.download = `MURO_${prefix}_${bestT > 0 ? 'plus'+bestT : bestT}_${Date.now()}.mid`;
+            a.click();
+            URL.revokeObjectURL(url);
+            writeLog("[Success] ダウンロードを開始しました");
+            
+        } catch (err) {
+            writeLog(`[Fatal Error] 処理中にエラー発生: ${err.message}`);
+        }
+    });
+</script>
+
+</body>
+</html>
